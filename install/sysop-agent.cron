@@ -1,0 +1,26 @@
+# Informe periodico del observador.
+#
+# ESTA LINEA ES LA CADENCIA. No hay ninguna otra: ni en el codigo, ni en la base
+# de datos. Para pasar de diario a semanal se edita la expresion de aca y nada
+# mas.
+#
+#   diario a las 08:00      0 8 * * *
+#   los lunes a las 08:00   0 8 * * 1
+#   cada 15 dias            0 8 1,16 * *
+#   dos veces por dia       0 8,20 * * *
+#
+# Lo dispara cron y no el propio servicio a proposito: si el daemon esta muerto,
+# este trabajo corre igual y manda el informe diciendo que esta muerto. Un
+# informe que no llega es indistinguible de "todo bien".
+#
+# La hora es la del servidor (UTC en los nuestros). La zona horaria para
+# MOSTRAR fechas sale de `fuentes.timezone` en app.yaml.
+#
+# Se llama al envoltorio y no al comando directo porque cron no carga el
+# EnvironmentFile de la unidad: sin eso el informe sale degradado, leyendo la
+# ultima copia buena de la configuracion en vez de la base.
+
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+0 11 * * *  sysop-agent  /opt/sysop-agent/bin/informe.sh informe >> /var/log/sysop-agent/informe.log 2>&1

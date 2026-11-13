@@ -1,0 +1,42 @@
+[Unit]
+Description=Acme Sysop - Agente observador (solo lectura)
+After=network-online.target
+Wants=network-online.target
+
+# Van en [Unit] y NO en [Service]: systemd las ignora silenciosamente si se
+# ponen en la seccion equivocada, con un "Unknown key name" en el journal que
+# es facil de pasar por alto. El efecto es que el bucle de reinicio no se
+# corta nunca, que es exactamente lo que estas dos lineas existen para evitar.
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=sysop-agent
+Group=sysop-agent
+WorkingDirectory=/opt/sysop-agent
+EnvironmentFile=/etc/sysop-agent/sysop-agent.env
+Environment=SYSOP_CONFIG_DIR=/opt/sysop-agent/config
+ExecStart=/opt/sysop-agent/venv/bin/python -m sysop.daemon
+Restart=always
+RestartSec=10
+
+# El observador no puede modificar lo que observa. Esto no es decorativo: es la
+# garantia tecnica de que un bug no se lleve puesta la plataforma.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+ReadWritePaths=/var/lib/sysop-agent /var/log/sysop-agent
+
+# PrivateTmp NO: los pidfiles de la plataforma viven en /tmp y hay que leerlos
+# para saber si un job esta corriendo de verdad.
+PrivateTmp=no
+
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

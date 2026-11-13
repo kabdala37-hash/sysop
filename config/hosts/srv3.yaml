@@ -1,0 +1,160 @@
+# Expectativas propias de srv3 (desarrollo).
+# Relevado el 2026-08-27. Se aplica encima de so.yaml y app.yaml, y gana.
+
+version: 1
+host: srv3
+installation: srv3
+rol: desarrollo
+
+systemd:
+  # Lo que TIENE que estar corriendo. Que una unidad falte de esta lista no la
+  # hace invisible: el agente la descubre igual y la reporta UNCLASSIFIED, que
+  # es la diferencia entre "no lo esperaba" y "no lo veo".
+  esperadas_activas:
+    - plataforma-api.service
+    - acme-channel-daemon.service
+    - mysql.service
+    - nginx.service
+
+  # Esperadas y APAGADAS. Que estén detenidas es correcto acá; si arrancan solas,
+  # eso sí es un hallazgo.
+  esperadas_detenidas:
+    - acme-line-supervisor.service   # en dev no se levantan workers de linea
+    - kamailio.service               # el SBC esta en srv3 pero sin trafico real
+    - rtpengine-daemon.service
+
+  # Legacy conocido. Se ignora a proposito, con motivo y vencimiento: un silencio
+  # sin fecha es un control borrado.
+  ignoradas:
+    - unidad: api-legacy.service
+      motivo: "resto de la plataforma anterior; hoy en bucle de reinicio permanente"
+      vence: "2026-12-31"
+    - unidad: clientea-front.service
+      motivo: "front de la plataforma anterior"
+      vence: "2026-12-31"
+    - unidad: acme-inbound-133.service
+      motivo: "supervisor viejo, reemplazado por line_supervisor unificado"
+      vence: "2026-12-31"
+    - unidad: acme-shift-133.service
+      motivo: "idem"
+      vence: "2026-12-31"
+    - unidad: acme-line-supervisor-acme.service
+      motivo: "instancia por tenant, superada por la unificada"
+      vence: "2026-12-31"
+
+# srv3 NO tiene /mnt/datos: los datos de la plataforma viven bajo /. Por eso los
+# mounts se descubren y no se copian entre servidores.
+filesystems:
+  descubrir: true
+
+logs:
+  # De donde se sacan los errores para el informe y para el diagnostico. Se lee
+  # SOLO lo nuevo desde la ultima corrida (cursor por archivo), se agrupa por
+  # firma y se manda un ejemplo de cada grupo con su cuenta. Es la diferencia
+  # entre "aca tenes mil lineas" y "esto paso 47 veces, y es esto".
+  extractos:
+    - ruta: /var/log/plataforma
+      que_es: "Logs de la plataforma: back, bots y trabajos programados."
+    - ruta: /var/log/sysop-agent
+      que_es: "Los del propio observador."
+
+  administrados:
+    - ruta: "/var/log/plataforma"
+      rotacion_esperada: true    # hoy NO existe logrotate para esto
+      max_mib: 512
+    - ruta: "/var/log/clientea"
+      rotacion_esperada: true
+      max_mib: 128
+
+# En srv3 el supervisor no corre, asi que su puerto no se espera escuchando.
+sockets:
+  - puerto: 10997
+    servicio: back
+    solo_loopback: true
+
+endpoints:
+  - id: back
+    url: "http://127.0.0.1:10997/api/health"
+    habilitado: false            # todavia no existe, ver _comun.yaml
+  - id: supervisor
+    habilitado: false            # el sidecar corre en srv2, no aca
+
+# ---------------------------------------------------------------------------
+# Mapa del servidor, para el agente que diagnostica
+# ---------------------------------------------------------------------------
+# Esto NO restringe por donde puede mirar: el agente lee lo que necesite. Es lo
+# que hace que no ande a ciegas. Sin el mapa pide cualquier cosa; con el sabe
+# donde esta parado, que hay en cada lado y cuando conviene mirarlo.
+#
+# Cada entrada contesta tres preguntas, y las tres importan: QUE ES (para que
+# entienda que esta leyendo), QUE VAS A ENCONTRAR (para que sepa si le sirve) y
+# CUANDO MIRARLO (para que no lo abra siempre).
+mapa:
+  # La regla al escribir esto, aprendida probandolo: declarar las RAICES, no
+  # solo lo conocido. Con un log en una ruta no declarada el agente no lo
+  # encontro; con `/var/log` como raiz, si. Lo que no esta en el mapa, para el
+  # agente no existe.
+  que_es_este_servidor: >
+    Servidor de DESARROLLO de Plataforma (srv3), en AWS. Corre el back-end
+    FastAPI en el 10997, MySQL local, nginx, y el daemon del canal de
+    mensajeria. Los workers de voz NO corren aca: el supervisor de linea esta
+    detenido a proposito. La plataforma esta instalada en /opt/plataforma.
+
+  rutas:
+    - ruta: /var/log
+      que_es: "TODOS los logs del servidor, no solo los nuestros."
+      que_vas_a_encontrar: >
+        Los de la plataforma en plataforma/, los del sistema (syslog,
+        auth.log, kern.log), los de nginx, los de MySQL, y los de CUALQUIER
+        otra aplicacion instalada, este declarada aca abajo o no.
+      cuando_mirarlo: >
+        Cuando el problema es de un componente que no figura en esta lista, o
+        cuando ya miraste donde correspondia y no encontraste la causa.
+        LISTAR ESTE DIRECTORIO es lo primero que hay que hacer ante un servicio
+        desconocido: el log suele llamarse como el servicio.
+
+    - ruta: /var/log/plataforma
+      que_es: "Logs de la plataforma: back-end, bots y trabajos programados."
+      que_vas_a_encontrar: >
+        Un archivo por componente. Tracebacks de Python, errores de conexion a
+        MySQL y a las APIs de LLM, y la salida de los cron jobs que la
+        redirigen aca.
+      cuando_mirarlo: "Ante cualquier falla de un JOB, del back o del canal."
+
+    - ruta: /opt/plataforma
+      que_es: "La instalacion de la plataforma."
+      que_vas_a_encontrar: >
+        build/ es el back-end, acmeBot/ los procesos offline, workerBot/ los
+        workers de voz, scripts/ la orquestacion.
+      cuando_mirarlo: >
+        Si un JOB apunta a una ruta que no existe, para ver donde esta
+        realmente instalado lo que busca.
+
+    - ruta: /etc/cron.d
+      que_es: "Los cron jobs renderizados por la plataforma."
+      que_vas_a_encontrar: "Un archivo por job, con su expresion y su comando completo."
+      cuando_mirarlo: "Si un trabajo no se lanza o su comando parece mal."
+
+    - ruta: /etc/systemd/system
+      que_es: "Las unidades de los servicios."
+      que_vas_a_encontrar: "El ExecStart de cada servicio, su usuario y su entorno."
+      cuando_mirarlo: >
+        Cuando una unidad no arranca: casi siempre el ExecStart apunta a algo
+        que no existe, o al entorno le falta una variable.
+
+    - ruta: /tmp
+      que_es: "Los pidfiles de instancia unica de la plataforma."
+      que_vas_a_encontrar: "plataforma_<job>_<tenant>.pid, uno por trabajo con bloqueo."
+      cuando_mirarlo: "Ante un bloqueo abandonado (JOB-10)."
+
+  unidades_systemd:
+    - nombre: plataforma-api.service
+      que_es: "El back-end FastAPI. Es lo que sirve /api y el 10997."
+    - nombre: acme-channel-daemon.service
+      que_es: "El daemon del canal de mensajeria (WhatsApp y Telegram)."
+    - nombre: mysql.service
+      que_es: "La base de la plataforma. Si esto cae, cae casi todo lo demas."
+    - nombre: api-legacy.service
+      que_es: >
+        LEGACY de la plataforma anterior, en bucle de reinicio permanente y
+        ignorado a proposito. No es un hallazgo: no lo reportes como problema.

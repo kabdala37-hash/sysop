@@ -1,0 +1,64 @@
+# Respaldo declarado del observador.
+#
+# ESTO ES LO QUE SE USA CUANDO LA BASE NO CONTESTA. Mientras MySQL responda,
+# manda MySQL (que es lo que se edita desde la pantalla de la plataforma) y este
+# archivo no se toca. Cuando MySQL no responde -- o cuando el observador corre
+# sobre una plataforma que no tiene tablas de agentes ni de reportes -- se usa
+# esto y el observador sigue avisando igual.
+#
+# Hasta el 2026-09-02 ese respaldo era una cache en SQLite que se llenaba sola.
+# Se saco: no era una garantia sino un recuerdo, y con el almacen vacio el
+# observador quedaba mudo sin que nadie se enterara. El motivo completo esta en
+# el docstring de `sysop/core/fuentes.py`.
+#
+# SE MANTIENE A MANO, y por eso el observador compara este archivo contra lo que
+# dice la base en cada informe: si difieren, el correo lo dice. Esa es la red de
+# seguridad. Que aparezca ese aviso significa "vino a actualizar esto", no que
+# algo se rompio.
+#
+# ESTE ARCHIVO VA A GIT: no lleva ni una credencial. Las dos que hacen falta se
+# nombran por variable de entorno y sus valores viven en
+# /etc/sysop-agent/sysop-agent.env, que no se versiona:
+#
+#     SYSOP_SMTP_PASSWORD    la clave de aplicacion de la cuenta que manda
+#     SYSOP_LLM_API_KEY      la API key del modelo que diagnostica
+#
+# Para verificar que el respaldo alcanza por si solo, sin tocar la base:
+#     sysop-agent config --respaldo
+
+version: 1
+
+# ---------------------------------------------------------------------------
+# El agente que diagnostica
+# ---------------------------------------------------------------------------
+# `prompt` es una ruta relativa a este directorio de configuracion. Va en un
+# archivo aparte a proposito: un prompt de sistema no entra comodo en una linea
+# de YAML y termina escrito a medias.
+agente:
+  nombre: SYSOP
+  prompt: prompts/sysop.md
+  modelo: gemini-3-flash-preview
+  vendor: gemini_text
+  api_key_env: SYSOP_LLM_API_KEY
+
+# ---------------------------------------------------------------------------
+# La cuenta con la que se manda
+# ---------------------------------------------------------------------------
+# secure: false es STARTTLS en el 587. Para SMTPS en el 465 va true.
+correo:
+  host: smtp.gmail.com
+  port: 587
+  secure: false
+  user: ops@example.com
+  password_env: SYSOP_SMTP_PASSWORD
+  from: ops@example.com
+
+# ---------------------------------------------------------------------------
+# A quien se le avisa
+# ---------------------------------------------------------------------------
+# El piso, no la lista completa: mientras la base responda vale la que se carga
+# desde la pantalla de reportes con scope 'sysop'. Esto es a quien hay que
+# avisarle si la base no esta.
+destinatarios:
+  - admin@example.com
+  - dev@example.com

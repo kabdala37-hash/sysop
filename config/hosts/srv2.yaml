@@ -1,0 +1,275 @@
+# Expectativas propias de srv2 (produccion).
+#
+# RELEVADO el 2026-09-02 por SSH de solo lectura (usuario claude_ro), con:
+#   systemctl list-units --type=service --state=running
+#   systemctl list-unit-files --type=service | grep -iE 'acme|clientea|telemarketer'
+#   findmnt -rno TARGET,SOURCE,FSTYPE -t ext4,xfs
+#   curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:{10997,11000}/api/health
+#   ss -ltnp
+#
+# Lo que no se pudo confirmar quedo marcado con `confirmar:` y una pregunta
+# concreta, en vez de darse por cierto.
+
+version: 1
+host: srv2
+installation: srv2
+rol: produccion
+
+systemd:
+  # Lo que TIENE que estar corriendo. Que una unidad falte de esta lista no la
+  # hace invisible: el agente la descubre igual y la reporta UNCLASSIFIED, que
+  # es la diferencia entre "no lo esperaba" y "no lo veo".
+  #
+  # Las siete estaban corriendo al relevar. Los dos nombres que antes faltaban
+  # eran `acme-supervisor.service` (el sidecar de supervision en vivo) y
+  # `telemetria.service` (la observabilidad del host).
+  esperadas_activas:
+    - plataforma-api.service
+    - acme-line-supervisor.service
+    - acme-channel-daemon.service
+    - acme-supervisor.service
+    - telemetria.service
+    - mysql.service
+    - nginx.service
+
+    # El SBC. La documentacion del repo dice que vive en srv3, pero en srv2 esta
+    # OPERATIVO y asi se queda (confirmado el 2026-09-03). Corre desde el
+    # 2026-08-21 sin un solo reinicio, kamailio 6.1.4 escuchando en 5060 sobre
+    # 127.0.0.1 y 10.0.0.3, y el control de rtpengine en el 2223.
+    - kamailio.service
+    - rtpengine-daemon.service
+
+    # OJO CON ESTE: esta corriendo pero `disabled`, o sea que lo arrancaron a
+    # mano y NO vuelve solo si el server rebootea. Va declarado a proposito:
+    # que el observador avise es justamente para lo que sirve.
+    - rtpengine-recording-daemon.service
+
+  # Esperadas y APAGADAS: hoy ninguna.
+  #
+  # Aca vivian `api-legacy.service` y `api-old.service`, las dos de la
+  # plataforma anterior. **Se borraron del server el 2026-09-08**, junto con sus
+  # directorios (/opt/api-legacy, /opt/api-old,
+  # /opt/api-old.old-2026-05-26 y /opt/backup-acme-ai), para hacer
+  # espacio en `/`. Estaban `inactive` + `disabled` con `NRestarts=0`, sin
+  # proceso, sin cron y sin tocarse desde junio.
+  #
+  # Sacarlas de aca es parte del mismo cambio: mientras siguieran declaradas, el
+  # observador las buscaba y abria SVC-01 UNIDAD_NO_INSTALADA en cada ciclo. Ese
+  # aviso era correcto — la unidad declarada no estaba — y por eso se corrige la
+  # declaracion, no el control.
+  esperadas_detenidas: []
+
+  # Aplicaciones de OTROS sistemas que conviven en este server. No son nuestras
+  # y no queremos ruido de ellas, pero el silencio lleva fecha.
+  ignoradas:
+    - unidad: acento-tunel.service
+      motivo: "aplicacion ajena a la plataforma"
+      vence: "2026-12-31"
+    - unidad: bclub-firma.service
+      motivo: "aplicacion ajena a la plataforma"
+      vence: "2026-12-31"
+    - unidad: native-revoicer-gateway.service
+      motivo: "aplicacion ajena a la plataforma"
+      vence: "2026-12-31"
+
+# Medido el 2026-09-02: / son 29G al 88%, /mnt/datos son 246G al 89% (219G
+# usados), y /boot al 10%. Igual se descubren: no se listan a mano.
+#
+# OJO AL ENCENDER: con los umbrales de so.yaml (warning 85, major 92) los DOS
+# discos entran en warning en el primer ciclo. No es un falso positivo, estan
+# realmente al 88 y 89%.
+filesystems:
+  descubrir: true
+
+logs:
+  # De donde se sacan los errores para el informe y para el diagnostico.
+  extractos:
+    - ruta: /var/log/plataforma
+      que_es: "Logs de la plataforma: back, bots y trabajos programados."
+      # Errores que el propio flujo YA reintenta. No se callan: se callan
+      # MIENTRAS se mantengan en su piso de ruido habitual, y se reportan
+      # cuando lo superan. Lo omitido se informa igual, contado, en `omitidos`.
+      #
+      # Los dos numeros salen de medir los logs de srv2 el 2026-09-08, no de
+      # estimar. Al bajar un umbral, medir de nuevo.
+      ignorar:
+        - patron: "respuesta Gemini vacia"
+          minimo_veces: 20
+          motivo: >
+            El mismo mensaje dice "no se persiste, retry desde rango": la
+            llamada se vuelve a analizar sola en la corrida siguiente. Medido:
+            entre 1 y 17 por dia, todos los dias. Arriba de 20 ya no es el
+            ruido de siempre y hay que mirarlo.
+        - patron: "HTTP 404"
+          minimo_veces: 25
+          motivo: >
+            La grabacion no esta en Telefonia; es un problema de datos, no
+            del server, y el downloader lo da por definitivo y sigue. Medido:
+            entre 5 y 21 por dia, salvo el 2026-09-07 que hubo 155 — y ESE dia
+            si habia algo que mirar. El umbral existe para que ese pico no
+            quede enterrado entre los 21 de todos los dias.
+    - ruta: /var/log/sysop-agent
+      que_es: "Los del propio observador."
+
+  administrados:
+    - ruta: "/var/log/plataforma"
+      rotacion_esperada: true
+      max_mib: 2048
+    - ruta: "/var/log/clientea"
+      rotacion_esperada: true
+      max_mib: 1024
+
+# Los dos probados el 2026-09-02: back 200 en 8 ms, supervisor 200 en 32 ms.
+endpoints:
+  - id: back
+    url: "http://127.0.0.1:10997/api/health"
+    habilitado: true
+  - id: supervisor
+    url: "http://127.0.0.1:11000/api/health"
+    habilitado: true
+
+# ---------------------------------------------------------------------------
+# Mapa del servidor, para el agente que diagnostica
+# ---------------------------------------------------------------------------
+# NO restringe por donde puede mirar: el agente lee lo que necesite. Es lo que
+# hace que no ande a ciegas.
+#
+# La regla al escribir esto, aprendida probandolo: **declarar las RAICES, no
+# solo lo conocido**. Se probo con un log en una ruta no declarada y el agente
+# no lo encontro: busco donde el mapa decia, no encontro nada y se rindio. Con
+# `/var/log` declarado como raiz, lo encontro y dio la causa exacta. Lo que no
+# esta en el mapa, para el agente no existe.
+#
+# ESTADO: relevado el 2026-09-02 por SSH de solo lectura. Las unidades, los
+# mounts, los puertos y los dos endpoints estan CONFIRMADOS contra el servidor.
+# Lo que sigue saliendo del codigo y no de haberlo visto queda marcado con
+# `verificar: true`, y se confirma con el propio observador:
+#
+#   sysop-agent probar          que ve cada control
+#   sysop-agent logs            que archivos de log existen de verdad
+#
+mapa:
+  que_es_este_servidor: >
+    PRODUCCION de Plataforma (srv2). Atiende llamadas telefonicas REALES de
+    los tenants clientea, clienteb y acme. Corre el back-end FastAPI en el
+    10997 detras de nginx, MySQL 8, el supervisor de lineas con sus workers de
+    voz Node.js, el daemon del canal de mensajeria, y el sidecar de supervision
+    en vivo en el 11000.
+
+    ANTES DE SUGERIR CUALQUIER ACCION, tener presente: **una llamada en curso se
+    corta si se reinicia un worker o el supervisor de lineas**. Del otro lado
+    hay una persona hablando. Sugerir primero como verificar, y decir
+    explicitamente si la accion implica cortar llamadas.
+
+  rutas:
+    - ruta: /var/log
+      que_es: "TODOS los logs del servidor, no solo los nuestros."
+      que_vas_a_encontrar: >
+        Los de la plataforma en plataforma/, los de la plataforma anterior
+        en clientea/, los del sistema (syslog, auth.log, kern.log), nginx, MySQL, y
+        los de cualquier otra aplicacion instalada, este declarada aca o no.
+      cuando_mirarlo: >
+        LISTALO PRIMERO ante un componente que no figura en esta lista. Si ya
+        miraste donde correspondia y no encontraste la causa, la respuesta suele
+        estar en un log que nadie declaro.
+
+    - ruta: /var/log/plataforma
+      que_es: "Logs de la plataforma, un subdirectorio por componente."
+      que_vas_a_encontrar: >
+        Un directorio por proceso (channel_daemon/, lineSupervisor/,
+        procesarLlamadas/, dept_email_report/...) y adentro un archivo por
+        tenant, `client_<tenant>.log`. Los workers de voz escriben en
+        subdirectorios por modo (both/, both-acme/). Tracebacks de Python,
+        errores de Telefonia y Twilio, y timeouts de los modelos.
+      cuando_mirarlo: "Ante cualquier falla de un JOB, del back, del canal o de una llamada."
+
+    - ruta: /opt/plataforma
+      que_es: "La instalacion de la plataforma en produccion."
+      que_vas_a_encontrar: >
+        build/ el back-end, acmeBot/ los procesos offline y los trabajos,
+        workerBot/ los workers de voz, supervisor/ el sidecar, scripts/ la
+        orquestacion, venv/ el entorno de Python.
+      cuando_mirarlo: >
+        Si un trabajo apunta a una ruta que no existe, para ver donde esta
+        instalado realmente lo que busca. Hasta el 2026-09-08 convivian aca las
+        rutas viejas de las versiones anteriores (/opt/api-legacy,
+        /opt/api-old, /opt/api-old.old-2026-05-26,
+        /opt/backup-acme-ai); se borraron para hacer espacio. Se verifico antes
+        que ningun trabajo las referenciara: los comandos de `rc_cron_jobs` y
+        los archivos de /etc/cron.d apuntan todos a /opt/plataforma. Si
+        aparece algo que las busque, es codigo viejo y hay que corregirlo, no
+        restaurar el directorio.
+
+    - ruta: /mnt/datos/plataforma
+      que_es: "Los datos pesados de la plataforma, separados por tenant."
+      que_vas_a_encontrar: >
+        Un directorio por tenant y adentro recordings/ (las grabaciones de las
+        llamadas, que es lo que ocupa), tools/, tools_tmp/ y tools_inbox/.
+      cuando_mirarlo: >
+        Cuando un filesystem se llena. Es el que crece: si el disco se agota, la
+        respuesta esta casi siempre en las grabaciones de algun tenant. NO
+        sugerir borrar sin verificar antes la politica de retencion.
+        CONFIRMADO el 2026-09-02: /mnt/datos existe, son 246G y esta al 89%.
+
+    - ruta: /etc/cron.d
+      que_es: "Los trabajos programados, renderizados por la plataforma."
+      que_vas_a_encontrar: >
+        Un archivo por trabajo con su expresion de cron y el comando completo.
+        El nombre suele ser plataforma_job_<id>, pero hay archivos con
+        nombres viejos (telemarketer_job_*, clientea_*).
+      cuando_mirarlo: "Si un trabajo no se lanza, o si su comando parece mal."
+
+    - ruta: /etc/systemd/system
+      que_es: "Las unidades de los servicios de la plataforma."
+      que_vas_a_encontrar: "El ExecStart de cada servicio, su usuario y su entorno."
+      cuando_mirarlo: >
+        Cuando una unidad no arranca: casi siempre el ExecStart apunta a algo
+        que no existe, o al entorno le falta una variable.
+
+    - ruta: /tmp
+      que_es: "Los pidfiles de instancia unica de los trabajos."
+      que_vas_a_encontrar: "plataforma_<trabajo>_<tenant>.pid, uno por trabajo con bloqueo."
+      cuando_mirarlo: "Ante un bloqueo abandonado (JOB-10)."
+
+  unidades_systemd:
+    - nombre: plataforma-api.service
+      que_es: "El back-end FastAPI (gunicorn, 4 workers) detras de nginx. Sirve todo /api."
+    - nombre: acme-line-supervisor.service
+      que_es: >
+        Mantiene un worker de voz por linea telefonica. **Si esto se reinicia,
+        se cortan TODAS las llamadas en curso**: los workers heredan su entorno.
+    - nombre: acme-channel-daemon.service
+      que_es: "El daemon del canal de mensajeria (WhatsApp por Twilio, Telegram)."
+    - nombre: mysql.service
+      que_es: "La base de la plataforma. Si cae, cae todo lo demas."
+    - nombre: nginx.service
+      que_es: "El proxy. Si cae, /api da 502 aunque el back este sano."
+    - nombre: acme-supervisor.service
+      que_es: >
+        El sidecar de supervision en vivo, en el puerto 11000. Deja escuchar una
+        llamada en curso e intervenir. Corre aparte del back a proposito: su
+        estado vive en memoria y tiene que haber un solo proceso.
+    - nombre: telemetria.service
+      que_es: "Observabilidad del host (scripts/telemetria). Independiente de la plataforma."
+    - nombre: kamailio.service
+      que_es: >
+        El SBC (kamailio 6.1.4), con rtpengine-daemon y
+        rtpengine-recording-daemon al lado. En srv2 esta OPERATIVO, aunque la
+        documentacion del repo diga que el SBC vive solo en srv3: esa parte de
+        la documentacion es la que quedo vieja. NO tocarlo. Reiniciar kamailio
+        corta la señalizacion de las lineas que pasan por el borde SIP.
+    # `api-legacy.service` se saco de aca el 2026-09-08: la unidad y su
+    # /opt/api-legacy se borraron del server. Ver la nota en `esperadas_detenidas`.
+
+  tenants:
+    - clientea
+    - clienteb
+    - acme
+
+# El propio observador. 2026-10-14: `check_result` baja de 45 a 31 dias SOLO en
+# srv2. Con 45 la base se estabilizaba en ~2,2 GB, arriba del tope absoluto de
+# OPS-10 (2048 MiB), y el / tiene 29 GB. 31 sigue cubriendo los 30 dias que
+# proyecta `trend`. El resto de `retencion_dias` sale de so.yaml.
+agente:
+  retencion_dias:
+    check_result: 31

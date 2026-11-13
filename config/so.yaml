@@ -1,0 +1,73 @@
+# Expectativas del SISTEMA OPERATIVO.
+#
+# Vale para cualquier servidor Linux, corra encima la aplicacion que corra. Este
+# archivo NO nombra ninguna plataforma a proposito: es lo que hace que instalar
+# el observador en un servidor de otro producto no pida tocar nada.
+#
+# Lo especifico de cada servidor va en config/hosts/<host>.yaml, que se aplica
+# encima y gana.
+
+version: 1
+
+
+# ---------------------------------------------------------------------------
+# Filesystems
+# ---------------------------------------------------------------------------
+# La lista NO se escribe a mano: se descubre con findmnt y se filtra. Acá van
+# solo los umbrales y las exclusiones, porque los mounts difieren por servidor
+# (srv2 tiene /mnt/datos y srv3 no) y una lista fija sería falsa en algún lado.
+filesystems:
+  descubrir: true
+  excluir_tipos: [tmpfs, devtmpfs, squashfs, overlay, efivarfs, autofs, proc, sysfs]
+  excluir_mounts: ["/snap", "/run"]
+  umbrales_uso_pct:   {warning: 85, major: 92, critical: 97}
+  umbrales_inodos_pct: {warning: 80, major: 90, critical: 97}
+  # Proyección de agotamiento, en días restantes.
+  umbrales_dias_para_llenar: {warning: 30, major: 14, critical: 3}
+
+# ---------------------------------------------------------------------------
+# Base de datos
+# ---------------------------------------------------------------------------
+# Referencia medida en srv2 el 2026-08-27: 232 conexiones de 500, con pico
+# historico de 263. El primer umbral (70% = 350) deja margen real sobre eso.
+
+
+# ---------------------------------------------------------------------------
+# El propio observador
+# ---------------------------------------------------------------------------
+agente:
+  max_cpu_pct: 1.0
+  max_rss_mib: 150
+  # Techo del almacen local. Se aplica el MENOR de los dos: el absoluto, y la
+  # fraccion del espacio que queda libre en el disco. Un tope absoluto solo no
+  # sirve — en srv3 estaba en 2048 MiB sobre un disco con 1.884 MiB libres, o
+  # sea que el disco se llenaba entero antes de que el control dijera nada.
+  max_almacen_mib: 2048
+  max_almacen_frac_libre: 0.25
+  # Cuantos dias vive cada cosa. `check_result` lo fija quien mas historia
+  # necesita, que es la tendencia (`trend` proyecta sobre 30 dias). Estuvo en
+  # 400, que a 24,5 MB por dia son ~9,8 GB: el observador llenaba el disco que
+  # vigila. `cursor` no se poda: es estado, no historia.
+  retencion_dias:
+    check_result: 45
+    observation: 7
+    incident_event: 90
+    llm_call: 90
+    outbox: 90
+
+# ---------------------------------------------------------------------------
+# Avisos
+# ---------------------------------------------------------------------------
+# Dos canales independientes, y la independencia es a proposito:
+#
+#   urgente    lo dispara el daemon, en el momento, solo para lo critico.
+#              Existe mientras el servicio corra. No depende de cron ni de
+#              ningun otro componente.
+#   periodico  lo dispara /etc/cron.d/sysop-agent. Si ese cron no existe, no hay
+#              informe y el resto sigue funcionando igual.
+#
+# El interruptor de abajo esta para una ventana de mantenimiento, no para el uso
+# normal. Apagarlo con el cron del informe tambien sin instalar deja al
+# observador mirando sin poder avisar de nada.
+alertas:
+  urgentes: true

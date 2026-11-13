@@ -1,0 +1,47 @@
+[Unit]
+Description=Acme Sysop - Canal de Telegram (solo lectura)
+After=network-online.target
+Wants=network-online.target
+
+# Unidad APARTE del observador a proposito: si el observador se cae, este es el
+# canal por el que se pregunta que paso. Compartir proceso seria perder los dos
+# al mismo tiempo, justo en el momento en que hace falta el segundo.
+#
+# No lleva `Requires=sysop-agent.service`: el bot tiene que poder contestar
+# aunque el observador este caido. Lo que lee es el almacen, que sigue ahi.
+
+# Van en [Unit] y NO en [Service]: systemd las ignora en silencio si se ponen en
+# la seccion equivocada, y el bucle de reinicio no se corta nunca.
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=sysop-agent
+Group=sysop-agent
+WorkingDirectory=/opt/sysop-agent
+EnvironmentFile=/etc/sysop-agent/sysop-agent.env
+Environment=SYSOP_CONFIG_DIR=/opt/sysop-agent/config
+ExecStart=/opt/sysop-agent/venv/bin/python -m sysop.bot.daemon
+Restart=always
+RestartSec=10
+
+# Las mismas garantias que el observador: no puede modificar lo que observa.
+# Del otro lado del bot hay internet, asi que esto importa mas todavia aca.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+ReadWritePaths=/var/lib/sysop-agent /var/log/sysop-agent
+
+# PrivateTmp NO: los pidfiles de la plataforma viven en /tmp y el agente los
+# lee para saber si un job esta corriendo de verdad.
+PrivateTmp=no
+
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

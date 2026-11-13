@@ -1,0 +1,36 @@
+# Rotación de los logs del observador.
+#
+# Instalar en /etc/logrotate.d/sysop-agent (0644 root:root). Lo hace install.sh.
+#
+# `daemon.log` NO figura acá: lo rota el propio daemon con RotatingFileHandler.
+# Dos rotadores sobre el mismo archivo se pisan en silencio — probado: logrotate
+# lo truncó a cero mientras el proceso mantenía su descriptor en la posición
+# 2839, y la siguiente escritura habría dejado ese hueco de ceros al principio.
+#
+# Acá quedan sólo los que nadie más rota.
+
+# El informe lo escribe cron con `>>`: no pasa por ningún logger.
+/var/log/sysop-agent/informe.log {
+    monthly
+    rotate 6
+    maxsize 10M
+    compress
+    delaycompress
+    missingok
+    notifempty
+    copytruncate
+    su sysop-agent sysop-agent
+    create 0640 sysop-agent sysop-agent
+}
+
+# Lo que ya rotó Python: comprimir y purgar. Están cerrados, nadie los tiene
+# abiertos.
+/var/log/sysop-agent/*.log.[0-9] {
+    monthly
+    rotate 3
+    compress
+    missingok
+    notifempty
+    nocreate
+    su sysop-agent sysop-agent
+}

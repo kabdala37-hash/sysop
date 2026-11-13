@@ -1,0 +1,249 @@
+# Expectativas de la APLICACION Plataforma.
+#
+# Todo lo que sabe de esta plataforma en particular. Para observar otra
+# aplicacion se escribe otro app.yaml y se apunta `app:` a su adaptador; el
+# so.yaml y el nucleo quedan igual.
+
+version: 1
+app: plataforma
+
+# ---------------------------------------------------------------------------
+# De donde salen los datos
+# ---------------------------------------------------------------------------
+# Tres cosas que cambian segun la plataforma: el agente que diagnostica, a
+# quien se le avisa, y con que cuenta se manda. Ninguna esta hardcodeada.
+#
+#   tipo: mysql     las resuelve el adaptador de la aplicacion
+#   tipo: archivo   las resuelve el nucleo, sin adaptador. Es la salida para una
+#                   plataforma que no tenga tablas de agentes ni de reportes
+#
+# LA CADENA SON DOS ESLABONES, Y ESTAN LOS DOS ACA A LA VISTA:
+#
+#   tipo: mysql        mientras la base conteste, manda la base. Es lo que se
+#                      edita desde la pantalla de la plataforma.
+#   respaldo: <arch>   cuando NO contesta, manda ese archivo. Se versiona, se
+#                      lee de un `cat` y se edita a mano.
+#
+# El observador NUNCA se queda sin configuracion: si la base no esta, usa el
+# respaldo y lo declara en el correo. Y cuando la base SI esta, compara las dos
+# y avisa si el archivo quedo viejo, que es la unica forma de que un archivo
+# mantenido a mano no envejezca en silencio.
+#
+# Una plataforma sin tablas de agentes ni de reportes usa `tipo: archivo` en las
+# tres y no necesita adaptador ni base:
+#
+#   agente:
+#     tipo: archivo
+#     prompt: prompts/sysop.md               # relativa a config/, o absoluta
+#     modelo: gemini-3.1-flash-lite-preview
+#     api_key_env: SYSOP_LLM_API_KEY         # el nombre de la variable, no la clave
+#   destinatarios:
+#     tipo: archivo
+#     lista: [alguien@ejemplo.com]
+
+fuentes:
+  timezone: America/Argentina/Buenos_Aires
+
+  agente:
+    tipo: mysql
+    tenant: acme
+    agent_id: SYSOP
+    respaldo: base.yaml
+
+  destinatarios:
+    tipo: mysql
+    # SIN `tenant`, a proposito: el informe del observador es de infraestructura
+    # y lo recibe todo el que tenga el scope, este en la company que este. Quien
+    # lo ASIGNA si tiene que ser un platform admin del tenant plataforma, pero
+    # eso lo controla el back, no esta consulta.
+    scope: sysop
+    respaldo: base.yaml
+
+  correo:
+    tipo: mysql
+    tenant: acme
+    respaldo: base.yaml
+
+
+# ---------------------------------------------------------------------------
+# El agente que diagnostica
+# ---------------------------------------------------------------------------
+# El modelo hace dos cosas: confirma que el problema es real y dice la causa
+# probable. NO fija estados ni severidades; eso ya lo decidio el plano
+# deterministico sobre evidencia medida.
+llm:
+  # Tope duro por dia. Alcanzado el tope el observador sigue avisando, sin
+  # diagnostico. Solo se llama al modelo cuando hay un incidente nuevo, asi que
+  # un dia sano no gasta nada.
+  presupuesto_diario_usd: 2.0
+  timeout_seg: 30
+
+  # Dolares por millon de tokens. La plataforma lleva la tabla real en
+  # `rc_token_pricing`; aca va lo que se use para el observador, que hay que
+  # actualizar cuando cambie el precio del modelo.
+  precios_usd_por_millon:
+    default: {entrada: 0.30, salida: 1.20}
+
+  # Controles que avisan aunque el modelo los descarte. Esta lista SE SUMA a la
+  # del codigo (SVC-01, SVC-05, DB-01, HST-07, HST-09, HST-12, HST-13), no la
+  # reemplaza. Todo lo critico esta protegido por severidad, ademas de por aca.
+  sin_filtro: []
+
+# ---------------------------------------------------------------------------
+# Base de datos
+# ---------------------------------------------------------------------------
+# Referencia medida en srv2 el 2026-08-27: 232 conexiones de 500, con pico
+# historico de 263. El primer umbral (70% = 350) deja margen real sobre eso.
+db:
+  umbrales_conexiones_pct: {warning: 70, major: 85, critical: 95}
+  umbrales_consulta_seg:   {warning: 30, major: 120, critical: 300}
+
+# ---------------------------------------------------------------------------
+# Trabajos programados
+# ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# Trabajos programados
+# ---------------------------------------------------------------------------
+jobs:
+  # De dónde sale el inventario. El agente los DESCUBRE, no se listan acá: una
+  # lista escrita a mano queda vieja en la primera alta y deja de avisar.
+  fuentes:
+    - tipo: mysql_tabla
+      tabla: rc_cron_jobs
+    - tipo: cron_d
+      patron: "/etc/cron.d/plataforma_job_*"
+    - tipo: systemd_timers
+    - tipo: mysql_events
+
+  # Tolerancia entre que un job debía lanzarse y que se lo dé por atrasado.
+  # Es un piso: para un job espaciado se usa la mitad de su periodo, porque uno
+  # que corre cada 5 minutos y se atrasa 10 tiene un problema y uno semanal
+  # atrasado 10 minutos no.
+  gracia_lanzamiento_seg: 120
+
+  # Contratos funcionales (JOB-08): que resultado tiene que haber producido.
+  contratos:
+    # syncLastCalls: cuantas corridas seguidas sin UNA respuesta de Telefonia
+    # se toleran. Que no haya llamadas nuevas no cuenta: Telefonia responde
+    # igual, y el sync lo deja en su log.
+    sync_corridas_sin_respuesta: 3
+    # Donde escribe el sync, con {componente} (syncLastCalls / syncLastCallsCX)
+    # y {tenant}.
+    sync_log: "/var/log/plataforma/{componente}/client_{tenant}.log"
+    # Pendientes tolerados en la cohorte de hace 24-48 h.
+    pendientes_max: 20
+  # Techo por defecto de cuánto puede durar una corrida antes de darla por colgada.
+  max_runtime_seg: 3600
+
+  # Bloqueos de instancia única. NUNCA se intenta tomar el bloqueo: se consulta
+  # /proc/locks por inode. Tomarlo se lo robaría a un job que arranque en ese
+  # instante y lo mataría con "ya hay una instancia corriendo".
+  pidfiles:
+    directorio: "/tmp"
+    patron: "plataforma_*.pid"
+    metodo: proc_locks
+
+# ---------------------------------------------------------------------------
+# Colas del canal de mensajería
+# ---------------------------------------------------------------------------
+
+
+
+
+# ---------------------------------------------------------------------------
+# Colas del canal de mensajería
+# ---------------------------------------------------------------------------
+colas:
+  inbox_edad_max_seg: 300        # PENDING/RETRY sin tomar
+  processing_lease_seg: 600      # tomado y no soltado
+  outbox_vencida_seg: 300
+  agenda_vencida_seg: 3600
+  # Backlog tolerado del pipeline de llamadas, sobre la cohorte de 24-48 h.
+  pipeline_pendientes_max: 50
+
+# ---------------------------------------------------------------------------
+# Workers de voz
+# ---------------------------------------------------------------------------
+workers:
+  # Sin esta unidad corriendo no hay quien levante los workers, asi que
+  # esperarlos seria esperar algo imposible. Si el YAML del host la declara como
+  # esperada-detenida, WRK-02 responde DISABLED_EXPECTED en vez de reportar
+  # faltantes todos los dias.
+  unidad_supervisor: acme-line-supervisor.service
+  # El sidecar ya publica workers_connected sin autenticacion.
+  supervisor_url: "http://127.0.0.1:11000/api/health"
+
+# ---------------------------------------------------------------------------
+# Costo de modelos
+# ---------------------------------------------------------------------------
+# Referencia medida en srv2 entre el 20 y el 27 de agosto de 2026: entre 16 y 405
+# USD por día. Esa dispersión es de día de semana, no de anomalía, y es la razón
+# por la que la línea base separa día y franja desde el arranque.
+
+
+# ---------------------------------------------------------------------------
+# Costo de modelos
+# ---------------------------------------------------------------------------
+# Referencia medida en srv2 entre el 20 y el 27 de agosto de 2026: entre 16 y 405
+# USD por día. Esa dispersión es de día de semana, no de anomalía, y es la razón
+# por la que la línea base separa día y franja desde el arranque.
+costos:
+  presupuesto_diario_usd: 600
+  presupuesto_mensual_usd: 14000
+  umbral_warning_pct: 80
+  umbral_major_pct: 100
+
+# ---------------------------------------------------------------------------
+# El propio observador
+# ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# Endpoints
+# ---------------------------------------------------------------------------
+# Con qué se prueba que un servicio no solo está vivo sino atendiendo.
+endpoints:
+  - id: back
+    url: "http://127.0.0.1:10997/api/health"
+    espera_codigo: 200
+    slo_ms: 1500
+    # Existe desde el 2026-08-27 (health_router.py del back).
+    habilitado: true
+
+  - id: supervisor
+    url: "http://127.0.0.1:11000/api/health"
+    espera_codigo: 200
+    slo_ms: 1500
+    habilitado: true
+
+# ---------------------------------------------------------------------------
+# Sockets
+# ---------------------------------------------------------------------------
+# El back y el supervisor escuchan en loopback a propósito y salen por nginx.
+# Que aparezcan en 0.0.0.0 significa que quedaron accesibles sin pasar por el
+# proxy: es un cambio de exposición, no un detalle de configuración.
+
+
+
+# ---------------------------------------------------------------------------
+# Sockets
+# ---------------------------------------------------------------------------
+# El back y el supervisor escuchan en loopback a propósito y salen por nginx.
+# Que aparezcan en 0.0.0.0 significa que quedaron accesibles sin pasar por el
+# proxy: es un cambio de exposición, no un detalle de configuración.
+sockets:
+  - puerto: 10997
+    servicio: back
+    solo_loopback: true
+  - puerto: 11000
+    servicio: supervisor
+    solo_loopback: true
+
+# ---------------------------------------------------------------------------
+# Filesystems
+# ---------------------------------------------------------------------------
+# La lista NO se escribe a mano: se descubre con findmnt y se filtra. Acá van
+# solo los umbrales y las exclusiones, porque los mounts difieren por servidor
+# (srv2 tiene /mnt/datos y srv3 no) y una lista fija sería falsa en algún lado.

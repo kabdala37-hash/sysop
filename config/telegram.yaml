@@ -1,0 +1,118 @@
+# El canal de Telegram del observador.
+#
+# ES CONFIGURACION PROPIA DEL OBSERVADOR, NO DE LA PLATAFORMA. No sale de la
+# base ni tiene respaldo: se lee de aca y de ningun otro lado. La razon es la
+# misma que motivo todo lo demas -- si la base se cae, este es el canal por el
+# que se pregunta que paso, asi que no puede depender de ella.
+#
+# ESTE ARCHIVO VA A GIT y no lleva el token. El token sale de la variable que se
+# nombre en `token_env`, y su valor vive en /etc/sysop-agent/sysop-agent.env.
+#
+# Para probarlo sin levantar el servicio:
+#     sysop-agent telegram --probar
+
+version: 1
+
+# En false el bot no arranca. Es el interruptor: no hace falta desinstalar nada
+# ni borrar el token para apagarlo.
+habilitado: true
+
+token_env: SYSOP_TELEGRAM_TOKEN
+
+# ---------------------------------------------------------------------------
+# Quien puede hablarle
+# ---------------------------------------------------------------------------
+# LISTA BLANCA, Y NO ES OPCIONAL. Cualquiera que sepa el nombre del bot puede
+# escribirle: Telegram no tiene forma de esconderlo. Del otro lado hay un agente
+# con herramientas de lectura sobre un servidor de PRODUCCION, asi que el unico
+# control que separa eso de internet es esta lista.
+#
+# Con la lista vacia el bot arranca y NO le contesta a nadie. Es a proposito:
+# preferimos un bot mudo a uno abierto.
+#
+# Para saber tu id: escribile al bot y mira el log. Cada mensaje de alguien que
+# no esta en la lista deja una linea con su chat_id, justamente para poder
+# agregarlo.
+autorizados:
+  - id: 100000001
+    nombre: Operador
+
+# ---------------------------------------------------------------------------
+# El agente que contesta
+# ---------------------------------------------------------------------------
+# La credencial y el modelo son los del agente del observador (los que resuelve
+# `fuentes`, con su respaldo). Lo unico propio es el prompt: conversar por
+# telefono no es lo mismo que emitir un diagnostico en JSON.
+#
+# `modelo` es opcional y sirve para usar uno mas barato o mas rapido en el chat
+# que el que diagnostica. Vacio = el mismo del agente.
+prompt: prompts/telegram.md
+modelo:
+
+# ---------------------------------------------------------------------------
+# Limites
+# ---------------------------------------------------------------------------
+# El presupuesto es SEPARADO del de los diagnosticos, en los dos sentidos: una
+# conversacion larga no puede dejar al observador sin diagnosticar, y una
+# tormenta de incidentes no puede dejarte sin poder preguntar que pasa.
+presupuesto_diario_usd: 1.0
+timeout_seg: 60
+
+# Cuanto espera cada consulta de mensajes nuevos. Es long polling: el bot queda
+# bloqueado esperando y responde apenas llega algo, sin consultar en un bucle.
+espera_polling_seg: 30
+
+# ---------------------------------------------------------------------------
+# Cuanto contexto guarda cada conversacion
+# ---------------------------------------------------------------------------
+# El historial vive EN MEMORIA del proceso, uno por chat. No en la base: lo que
+# importa de verdad (informes, incidentes, mediciones) ya esta en el almacen y
+# el agente lo consulta con herramientas. Esto es solo el hilo de la charla.
+#
+# Los tres topes actuan en este orden, y el segundo es el que muerde primero
+# cuando el agente lee cosas grandes:
+#
+#   max_turnos          intercambios que se recuerdan
+#   max_chars_historial peso total. Al pasarse, PRIMERO se descartan los
+#                       resultados de herramientas viejos -- que es donde esta
+#                       el peso, y que ademas son una foto vencida del servidor
+#                       -- y recien despues se tiran turnos enteros
+#   ttl_horas           sin hablar, se empieza de cero. Se avisa cuando pasa
+#
+# Medido en srv3 el 2026-09-02: un informe completo pesa 3.429 caracteres, un
+# journal de 60 lineas 6.618, y una pregunta con su respuesta 168. Con 80.000
+# entran unos 12 turnos con lectura pesada; charlando sin herramientas el tope
+# no se toca nunca, manda `max_turnos` mucho antes.
+#
+# Subirlo NO lo limita la ventana del modelo, que es de ~1M de tokens contra los
+# 20.000 de esto. Lo limita el costo: cada turno reenvia el historial entero.
+conversacion:
+  max_turnos: 12
+  max_chars_historial: 80000
+  ttl_horas: 3
+
+  # EL TECHO, que es otra cosa que `max_chars_historial` y no hay que
+  # confundirlos:
+  #
+  #   max_chars_historial   cuanto CONVIENE gastar por pregunta (economico)
+  #   esto                  cuanto ENTRA en el modelo (fisico)
+  #
+  # Gana el mas chico, y en la practica gana siempre el de arriba. Este existe
+  # para dos casos donde el otro no alcanza: que alguien suba mucho el tope, y
+  # que se cambie a un modelo de ventana chica. En los dos, pasarse no degrada
+  # nada: la API devuelve 400 y el bot deja de contestar, justo cuando hace
+  # falta.
+  #
+  # POR QUE NO PONER EL TECHO COMO TOPE. Cada pregunta reenvia el historial
+  # entero, asi que el costo por pregunta crece con el largo de la charla. Con
+  # los precios de app.yaml (0,30 USD por millon de tokens de entrada):
+  #
+  #     historial      tokens     USD/pregunta   preguntas/dia con 1 USD
+  #        80.000      20.000         0,0060                 166
+  #       200.000      50.000         0,0150                  66
+  #     3.600.000     900.000         0,2700                   3   <- el 90%
+  #
+  # La ventana se declara y no se consulta: la API no la expone de forma
+  # confiable, y un default optimista es peor que uno explicito.
+  ventana_modelo_tokens: 1000000
+  max_pct_ventana: 90
